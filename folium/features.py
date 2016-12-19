@@ -309,10 +309,12 @@ class GeoJson(Layer):
     """
     def __init__(self, data, style_function=None, name=None,
                  overlay=True, control=True, smooth_factor=None,
-                 highlight_function=None, popup=None):
+                 highlight_function=None, popup=None, realtime=False):
         super(GeoJson, self).__init__(name=name, overlay=overlay,
                                       control=control)
         self._name = 'GeoJson'
+        self.realtime = realtime
+
         if hasattr(data, 'read'):
             self.embed = True
             self.data = json.load(data)
@@ -323,6 +325,9 @@ class GeoJson(Layer):
             if data.lstrip()[0] in '[{':  # This is a GeoJSON inline string
                 self.embed = True
                 self.data = json.loads(data)
+            elif data.split(':',1)[0] in ['http','https','file']:
+                self.embed = False
+                self.data = data
             else:  # This is a filename
                 self.embed = False
                 self.data = data
@@ -375,27 +380,53 @@ class GeoJson(Layer):
                         {% if this.popup %}
                             layer.bindPopup({{this.popup}});
                         {% endif %}
+                        {% if this.realtime %}
+                            layer.setStyle(feature.properties.style)
+                        {% endif %}
                 };
             {% elif this.popup %}
                 {{this.get_name()}}_onEachFeature = function onEachFeature(feature, layer) {
                     layer.bindPopup({{this.popup}});
+                    {% if this.realtime %}
+                        layer.setStyle(feature.properties.style)
+                    {% endif %}
+                };
+            {% elif this.realtime %}
+                {{this.get_name()}}_onEachFeature = function onEachFeature(feature, layer) {
+                    layer.setStyle(feature.properties.style)
                 };
             {% endif %}
 
+            {% if this.realtime %}
+                var {{this.get_name()}} = L.realtime({
+                    url: "{{this.data}}",
+                    crossOrigin: true,
+                    type: 'json'
+                }
+            {% else %}
                 var {{this.get_name()}} = L.geoJson(
                     {% if this.embed %}{{this.style_data()}}{% else %}"{{this.data}}"{% endif %}
-                    {% if this.smooth_factor is not none or this.highlight or this.popup %}
+            {% endif %}
+                    {% if this.smooth_factor is not none or this.highlight or this.popup or this.realtime %}
                         , {
+                        {% if this.realtime %}
+                           start: "{{this.realtime.setdefault('start',"true")}}",
+                           interval: {{this.realtime.setdefault('interval', 60000)}}
+                        {% endif %}
                         {% if this.smooth_factor is not none  %}
+                            {% if this.realtime %}
+                            ,
+                            {% endif %}
                             smoothFactor:{{this.smooth_factor}}
                         {% endif %}
 
-                        {% if this.highlight or this.popup %}
-                            {% if this.smooth_factor is not none  %}
+                        {% if this.highlight or this.popup or this.realtime %}
+                            {% if this.realtime or this.smooth_factor is not none  %}
                             ,
                             {% endif %}
                             onEachFeature: {{this.get_name()}}_onEachFeature
                         {% endif %}
+
                         }
                     {% endif %}
                     ).addTo({{this._parent.get_name()}});
@@ -421,6 +452,19 @@ class GeoJson(Layer):
             feature.setdefault('properties', {}).setdefault('style', {}).update(self.style_function(feature))  # noqa
             feature.setdefault('properties', {}).setdefault('highlight', {}).update(self.highlight_function(feature))  # noqa
         return json.dumps(self.data, sort_keys=True)
+
+    def render(self, **kwargs):
+        """Renders the HTML representation of the element."""
+        super(GeoJson, self).render(**kwargs)
+
+        figure = self.get_root()
+        assert isinstance(figure, Figure), ("You cannot render this Element "
+                                            "if it's not in a Figure.")
+
+        if self.realtime:
+            figure.header.add_child(
+                JavascriptLink("https://cdnjs.cloudflare.com/ajax/libs/leaflet-realtime/1.3.0/leaflet-realtime.js"),  # noqa
+                name='realtime')
 
     def _get_self_bounds(self):
         """
